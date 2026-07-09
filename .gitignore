@@ -1,3 +1,7 @@
-.env
-.env.local
-.env*.local
+.env*
+!.env.example
+.next/
+node_modules/
+out/
+.DS_Store
+supabase/.temp/
