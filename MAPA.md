@@ -6,6 +6,15 @@ App local do Nimbo/Pessoal-Agent.
 
 Construir o MVP do Nimbo como agente pessoal com guia central, memória percebida e especialistas emergentes.
 
+## Regra arquitetural
+
+- Não criar backend agentic do zero quando OpenClaw ou Hermes Agent já tiverem padrão funcional para o mesmo problema.
+- Referências locais canônicas:
+  - `referencias/plataformas-agenticas/openclaw/`
+  - `referencias/plataformas-agenticas/hermes-agent/`
+- Antes de evoluir runtime, memória, sessões, skills/tools, permissões, observabilidade ou orquestração, consultar e copiar/adaptar os padrões dessas bases.
+- Personalizações do Nimbo devem ser pequenas e justificadas, partindo do que já funciona nas referências.
+
 ## Arquivos importantes
 
 - `STATUS.md` — resumo executivo curto para retomada rápida do app.

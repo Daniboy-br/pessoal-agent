@@ -11,6 +11,17 @@ POC do Nimbo: um campo pessoal com cinco agentes.
 - Memória, execução, conhecimento, clareza e criação são pilares internos de todo agente, não personagens principais.
 - Expansão para mais agentes fica como evolução futura.
 
+## Regra arquitetural
+
+Nimbo não deve inventar um backend agentic do zero. OpenClaw e Hermes Agent são as referências-base para runtime, memória, sessões, skills/tools, permissões, observabilidade e orquestração.
+
+Fluxo obrigatório antes de mexer no core:
+
+1. localizar como OpenClaw e/ou Hermes resolvem o problema;
+2. copiar/adaptar estrutura, semântica e regras que já funcionam;
+3. personalizar só o necessário para Next.js + Supabase + experiência Nimbo;
+4. documentar qualquer diferença relevante.
+
 ## Stack
 
 - Next.js
