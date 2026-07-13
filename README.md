@@ -56,9 +56,20 @@ npm run dev
 /diagnostics/supabase
 ```
 
+## Documentação funcional
+
+Toda feature, rota, serviço ou tabela relevante criada no Nimbo deve ganhar material simples em `docs/features/` explicando função, fluxo, arquivos/tabelas envolvidos, status e forma de verificação.
+
+Esse mapa funcional nasce junto com o desenvolvimento para manter claro tudo que o aplicativo já é capaz de fazer.
+
 ## Verificação
 
 ```bash
+# carregar .env.local quando rodar fora do Next
+set -a
+. ./.env.local
+set +a
+
 npm run check:supabase
 npm run typecheck
 npm run build
