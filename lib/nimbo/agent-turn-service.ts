@@ -1,135 +1,118 @@
 import { SupabaseClient } from "@supabase/supabase-js";
+import { assertData, assertOk } from "@/lib/nimbo/db-utils";
 import { callGuideLlm } from "@/lib/nimbo/llm-provider";
+import { MemoryService } from "@/lib/nimbo/memory-service";
+import { ObservabilityService } from "@/lib/nimbo/observability-service";
 import { renderPrompt } from "@/lib/nimbo/prompt-builder";
+import { SessionRouter } from "@/lib/nimbo/session-router";
 
 export type RunAgentTurnInput = {
   appUserId: string;
   message: string;
   conversationId?: string;
   agentId?: string;
+  source?: string;
 };
 
-function assertData(result: { data: unknown; error: { message: string } | null }, message: string): any {
-  if (result.error) throw new Error(`${message}: ${result.error.message}`);
-  if (!result.data) throw new Error(`${message}: empty result`);
-  return result.data;
-}
-
 export class AgentTurnService {
-  constructor(private readonly supabase: SupabaseClient) {}
+  private readonly memory: MemoryService;
+  private readonly observability: ObservabilityService;
+  private readonly sessions: SessionRouter;
+
+  constructor(private readonly supabase: SupabaseClient) {
+    this.memory = new MemoryService(supabase);
+    this.observability = new ObservabilityService(supabase);
+    this.sessions = new SessionRouter(supabase);
+  }
 
   async run(input: RunAgentTurnInput) {
-    const startedAt = Date.now();
-    const appUserId = input.appUserId;
+    const trace = this.observability.startTrace();
     const db = this.supabase as any;
+    let turnId: string | null = null;
 
-    const userProfile = assertData(await db
-      .from("user_profiles")
-      .select("id, nickname, tone_preference, current_context")
-      .eq("app_user_id", appUserId)
-      .maybeSingle(), "Failed to load user profile");
+    const runtimeSession = await this.sessions.resolve({
+      appUserId: input.appUserId,
+      conversationId: input.conversationId,
+      agentId: input.agentId,
+      source: input.source,
+    });
 
-    const nimboProfile = assertData(await db
-      .from("nimbo_profiles")
-      .select("id, name, status, metadata")
-      .eq("app_user_id", appUserId)
-      .single(), "Failed to load Nimbo profile");
+    await this.observability.audit({
+      appUserId: input.appUserId,
+      eventType: "turn_start",
+      actorType: "agent",
+      details: {
+        request_id: trace.requestId,
+        session_key: runtimeSession.sessionKey,
+        conversation_id: runtimeSession.conversation.id,
+        agent_id: runtimeSession.agent.id,
+      },
+    });
 
-    const agent = assertData(await db
-      .from("nimbo_agents")
-      .select("id, name, agent_kind, description, territory, tone_profile, prompt_version")
-      .eq("app_user_id", appUserId)
-      .eq("agent_kind", "guide")
-      .order("slot", { ascending: true })
-      .limit(1)
-      .single(), "Failed to load guide agent");
-
-    const conversation = input.conversationId
-      ? assertData(await db
-        .from("conversations")
-        .select("id, title, status")
-        .eq("id", input.conversationId)
-        .eq("app_user_id", appUserId)
-        .single(), "Failed to load conversation")
-      : assertData(await db
-        .from("conversations")
-        .insert({
-          app_user_id: appUserId,
-          nimbo_profile_id: nimboProfile.id,
-          agent_id: agent.id,
-          title: "Conversa com o guia central",
-          mode: "free",
-          status: "open",
-          metadata: { source: "agent-turn-service-v0" },
-          last_message_at: new Date().toISOString(),
-        })
-        .select("id, title, status")
-        .single(), "Failed to create conversation");
-
-    const inputMessage = assertData(await db
+    const inputMessage = assertData<{ id: string; content: string; created_at: string }>(await db
       .from("messages")
       .insert({
-        conversation_id: conversation.id,
-        app_user_id: appUserId,
+        conversation_id: runtimeSession.conversation.id,
+        app_user_id: input.appUserId,
         agent_id: null,
         role: "user",
         content: input.message,
-        metadata: { source: "agent-turn-service-v0" },
+        metadata: {
+          source: "agent-turn-service-v1",
+          request_id: trace.requestId,
+          session_key: runtimeSession.sessionKey,
+        },
       })
       .select("id, content, created_at")
       .single(), "Failed to persist input message");
 
-    const memoriesResult = await db
-      .from("memories")
-      .select("memory_type, content, confidence")
-      .eq("app_user_id", appUserId)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(8);
-
-    if (memoriesResult.error) throw new Error(`Failed to prefetch memories: ${memoriesResult.error.message}`);
-
-    const prompt = renderPrompt({
-      agent,
-      userProfile,
-      nimboProfile,
-      memories: memoriesResult.data ?? [],
-      userMessage: input.message,
+    const memories = await this.memory.prefetch({
+      appUserId: input.appUserId,
+      agentId: runtimeSession.agent.id,
+      limit: 8,
     });
 
-    const turn = assertData(await db
-      .from("agent_turns")
-      .insert({
-        conversation_id: conversation.id,
-        app_user_id: appUserId,
-        nimbo_profile_id: nimboProfile.id,
-        agent_id: agent.id,
-        input_message_id: inputMessage.id,
-        status: "running",
-        prompt_version: prompt.version,
-        metadata: {
-          prompt_blocks: prompt.blocks.map((block) => block.key),
-          source: "agent-turn-service-v0",
-        },
-      })
-      .select("id")
-      .single(), "Failed to create agent turn");
+    const prompt = renderPrompt({
+      agent: runtimeSession.agent,
+      userProfile: runtimeSession.userProfile,
+      nimboProfile: runtimeSession.nimboProfile,
+      memoryContext: this.memory.buildContextBlock(memories),
+      memories,
+      userMessage: input.message,
+      mode: "free",
+      capabilities: [],
+    });
+
+    const turn = await this.observability.createTurn({
+      conversationId: runtimeSession.conversation.id,
+      appUserId: input.appUserId,
+      nimboProfileId: runtimeSession.nimboProfile.id,
+      agentId: runtimeSession.agent.id,
+      inputMessageId: inputMessage.id,
+      promptVersion: prompt.version,
+      promptBlocks: prompt.blocks.map((block) => block.key),
+      sessionKey: runtimeSession.sessionKey,
+      requestId: trace.requestId,
+    });
+    turnId = turn.id;
 
     try {
       const llm = await callGuideLlm({ systemPrompt: prompt.systemPrompt, userMessage: input.message });
-      const latencyMs = Date.now() - startedAt;
+      const latencyMs = this.observability.latencyMs(trace);
 
-      const outputMessage = assertData(await db
+      const outputMessage = assertData<{ id: string; content: string; created_at: string }>(await db
         .from("messages")
         .insert({
-          conversation_id: conversation.id,
-          app_user_id: appUserId,
-          agent_id: agent.id,
+          conversation_id: runtimeSession.conversation.id,
+          app_user_id: input.appUserId,
+          agent_id: runtimeSession.agent.id,
           role: "assistant",
           content: llm.content,
           metadata: {
-            source: "agent-turn-service-v0",
+            source: "agent-turn-service-v1",
             turn_id: turn.id,
+            request_id: trace.requestId,
+            session_key: runtimeSession.sessionKey,
             provider: llm.provider,
             model: llm.model,
           },
@@ -137,74 +120,82 @@ export class AgentTurnService {
         .select("id, content, created_at")
         .single(), "Failed to persist output message");
 
-      const llmCallResult = await db
-        .from("llm_calls")
-        .insert({
-          app_user_id: appUserId,
-          agent_id: agent.id,
-          conversation_id: conversation.id,
-          provider: llm.provider,
-          model: llm.model,
-          prompt_version: prompt.version,
-          input_tokens: llm.inputTokens ?? null,
-          output_tokens: llm.outputTokens ?? null,
-          total_cost_usd: llm.estimatedCostUsd ?? null,
-          status: "success",
-          metadata: {
-            turn_id: turn.id,
-            prompt_blocks: prompt.blocks.map((block) => block.key),
-            raw: llm.raw ?? null,
-          },
-        });
+      await this.observability.recordLlmSuccess({
+        appUserId: input.appUserId,
+        agentId: runtimeSession.agent.id,
+        conversationId: runtimeSession.conversation.id,
+        turnId: turn.id,
+        promptVersion: prompt.version,
+        promptBlocks: prompt.safeMetadata.map((block) => block.key),
+        requestId: trace.requestId,
+        llm,
+      });
 
-      if (llmCallResult.error) throw new Error(`Failed to persist LLM call: ${llmCallResult.error.message}`);
+      await this.observability.completeTurn({
+        turnId: turn.id,
+        outputMessageId: outputMessage.id,
+        llm,
+        latencyMs,
+      });
 
-      const updateTurnResult = await db
-        .from("agent_turns")
-        .update({
-          output_message_id: outputMessage.id,
-          status: "completed",
-          provider: llm.provider,
-          model: llm.model,
-          input_tokens: llm.inputTokens ?? null,
-          output_tokens: llm.outputTokens ?? null,
-          estimated_cost_usd: llm.estimatedCostUsd ?? null,
-          latency_ms: latencyMs,
-          api_call_count: 1,
-          exit_reason: "assistant_response",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", turn.id);
+      const memorySync = await this.memory.syncTurn({
+        appUserId: input.appUserId,
+        agentId: runtimeSession.agent.id,
+        inputMessageId: inputMessage.id,
+        outputMessageId: outputMessage.id,
+        userMessage: input.message,
+        assistantMessage: outputMessage.content,
+        turnId: turn.id,
+      });
 
-      if (updateTurnResult.error) throw new Error(`Failed to complete agent turn: ${updateTurnResult.error.message}`);
-
-      await db
+      assertOk(await db
         .from("conversations")
         .update({ last_message_at: new Date().toISOString() })
-        .eq("id", conversation.id);
+        .eq("id", runtimeSession.conversation.id), "Failed to update conversation activity");
+
+      await this.observability.audit({
+        appUserId: input.appUserId,
+        eventType: "turn_end",
+        actorType: "agent",
+        details: {
+          request_id: trace.requestId,
+          session_key: runtimeSession.sessionKey,
+          conversation_id: runtimeSession.conversation.id,
+          agent_id: runtimeSession.agent.id,
+          turn_id: turn.id,
+          memory_sync: memorySync,
+          latency_ms: latencyMs,
+        },
+      });
 
       return {
         ok: true,
-        conversationId: conversation.id,
+        conversationId: runtimeSession.conversation.id,
         turnId: turn.id,
+        sessionKey: runtimeSession.sessionKey,
         assistantMessage: outputMessage,
         provider: llm.provider,
         model: llm.model,
         promptVersion: prompt.version,
+        promptBlocks: prompt.safeMetadata,
+        memorySync,
         latencyMs,
       };
     } catch (error) {
-      const latencyMs = Date.now() - startedAt;
-      await db
-        .from("agent_turns")
-        .update({
-          status: "error",
+      const latencyMs = this.observability.latencyMs(trace);
+      if (turnId) await this.observability.failTurn({ turnId, error, latencyMs });
+      await this.observability.audit({
+        appUserId: input.appUserId,
+        eventType: "turn_error",
+        actorType: "agent",
+        details: {
+          request_id: trace.requestId,
+          session_key: runtimeSession.sessionKey,
+          turn_id: turnId,
           latency_ms: latencyMs,
           error_message: error instanceof Error ? error.message : "Unknown turn error",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", turn.id);
-
+        },
+      });
       throw error;
     }
   }

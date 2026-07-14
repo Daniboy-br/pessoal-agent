@@ -7,6 +7,8 @@ const chatSchema = z.object({
   appUserId: z.string().uuid(),
   message: z.string().min(1).max(5000),
   conversationId: z.string().uuid().optional(),
+  agentId: z.string().uuid().optional(),
+  source: z.string().min(1).max(80).optional(),
 });
 
 export async function POST(request: Request) {

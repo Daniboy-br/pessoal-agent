@@ -12,7 +12,7 @@ Atualizado em: 2026-07-09
 
 ## Próximo passo recomendado
 
-- Evoluir a v0 navegável para persistir respostas/perfil no Supabase e transformar a prévia do Motor de Despertar em fluxo real de criação do “Meu Nimbo”.
+- Validar o deploy Vercel com onboarding real e depois criar UI de revisão de memórias candidatas, já em cima do `MemoryService` v0.
 
 ## Atualização — 2026-07-12
 
@@ -30,6 +30,17 @@ Atualizado em: 2026-07-09
 - Regra de documentação aplicada: materiais criados em `docs/features/` para `agent_turns`, persistência do onboarding, `AgentTurnService` e `PromptBuilder`.
 - Verificações passaram: `npm run typecheck`, `npm run build`, `npm run check:supabase` com env carregado, teste real de onboarding e teste real de chat.
 - Próxima execução recomendada: Fase 2 do plano, criando `MemoryService` v0 e UI de revisão de memórias candidatas.
+
+## Atualização — 2026-07-14
+
+- Fase 2A de arquitetura executada seguindo a regra reference-first Hermes/OpenClaw.
+- `AgentTurnService` deixou de concentrar responsabilidades e virou orquestrador.
+- Criados `SessionRouter`, `MemoryService`, `ObservabilityService` e helpers de DB.
+- `PromptBuilder` evoluído para v1 com blocos tipados, sanitização básica, capacidades permitidas e metadata segura.
+- `MemoryService` agora faz prefetch de memórias ativas e cria candidata heurística pós-turno.
+- `ObservabilityService` registra `turn_start`, `turn_end` e `turn_error` em `audit_events` com redaction metadata-only.
+- Documentação funcional criada em `docs/features/runtime-architecture-v1.md`.
+- Verificações passaram: `npm run typecheck`, `npm run build`, `npm run check:supabase`.
 
 ## Arquivos canônicos
 
